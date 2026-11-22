@@ -60,13 +60,38 @@ export function normalizeAiBlockType(rawType: string): BlockType {
 }
 
 async function postAssist<T>(payload: Record<string, unknown>): Promise<T> {
-  const response = await fetch('/api/ai/assist', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
+  const apiBase = ((import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env?.VITE_API_BASE_URL ?? '').replace(/\/+$/, '');
+  const endpoint = `${apiBase}/api/ai/assist`;
 
-  const data = await response.json();
+  let response: Response;
+  try {
+    response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    throw new Error(
+      'Não foi possível conectar ao servidor do Assistente IA. Verifique sua internet ou se o servidor está ativo.'
+    );
+  }
+
+  const contentType = response.headers.get('content-type') || '';
+  const rawText = await response.text();
+
+  if (!contentType.includes('application/json') || rawText.trimStart().startsWith('<')) {
+    throw new Error(
+      'O Assistente IA precisa de conexão com o servidor do FolioNotes (recurso indisponível no modo offline do aplicativo).'
+    );
+  }
+
+  let data: { result?: T; error?: string };
+  try {
+    data = JSON.parse(rawText) as { result?: T; error?: string };
+  } catch {
+    throw new Error('Resposta inválida recebida do servidor de IA.');
+  }
+
   if (!response.ok) {
     throw new Error(data?.error || 'Não foi possível concluir a solicitação de IA.');
   }

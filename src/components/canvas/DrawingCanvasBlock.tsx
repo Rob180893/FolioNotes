@@ -13,6 +13,11 @@ import {
 } from 'lucide-react';
 import type { DrawingData, DrawingPoint, DrawingStroke, PenTool as PenToolType } from '../../types/notes';
 import { exportDrawingToPngDataUrl, renderStrokesToContext } from '../../utils/canvasRender';
+import {
+  isLikelyPalmTouch,
+  isStylusEraserEvent,
+  scrollEditorByTouchDelta,
+} from '../../utils/stylusUtils';
 
 interface DrawingCanvasBlockProps {
   drawing: DrawingData;
@@ -75,7 +80,13 @@ export const DrawingCanvasBlock: React.FC<DrawingCanvasBlockProps> = ({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const isDrawingRef = useRef(false);
+  const activePointerIdRef = useRef<number | null>(null);
+  const isBarrelEraserRef = useRef(false);
   const activeStrokeRef = useRef<DrawingStroke | null>(null);
+  const strokesRef = useRef(drawing.strokes);
+  strokesRef.current = drawing.strokes;
+  const penGuardUntilRef = useRef(0);
+  const fingerScrollRef = useRef<{ pointerId: number; lastX: number; lastY: number } | null>(null);
   const logicalWidth = 840;
   const logicalHeight = isFullscreen ? 540 : drawing.height || 270;
 
@@ -86,17 +97,33 @@ export const DrawingCanvasBlock: React.FC<DrawingCanvasBlockProps> = ({
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
-      const strokesToDraw = extraStroke ? [...drawing.strokes, extraStroke] : drawing.strokes;
+      const strokesToDraw = extraStroke
+        ? [...strokesRef.current, extraStroke]
+        : strokesRef.current;
       renderStrokesToContext(ctx, strokesToDraw, logicalWidth, logicalHeight, {
         adaptDarkInk: isSheetDark && !isFullscreen,
       });
     },
-    [drawing.strokes, logicalHeight, isSheetDark, isFullscreen]
+    [logicalHeight, isSheetDark, isFullscreen]
   );
 
   useEffect(() => {
     redraw();
-  }, [redraw]);
+  }, [drawing.strokes, redraw]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const handleTouchPrevent = (ev: TouchEvent) => {
+      ev.preventDefault();
+    };
+    canvas.addEventListener('touchstart', handleTouchPrevent, { passive: false });
+    canvas.addEventListener('touchmove', handleTouchPrevent, { passive: false });
+    return () => {
+      canvas.removeEventListener('touchstart', handleTouchPrevent);
+      canvas.removeEventListener('touchmove', handleTouchPrevent);
+    };
+  }, [isFullscreen]);
 
   const selectTool = (nextTool: PenToolType) => {
     setLocalTool(nextTool);
@@ -111,21 +138,21 @@ export const DrawingCanvasBlock: React.FC<DrawingCanvasBlockProps> = ({
     }
   };
 
-  const getRelativePoint = (e: React.PointerEvent<HTMLCanvasElement>): DrawingPoint => {
+  const toRelativePoint = (clientX: number, clientY: number, pressure: number): DrawingPoint => {
     const canvas = canvasRef.current!;
     const rect = canvas.getBoundingClientRect();
     const scaleX = logicalWidth / rect.width;
     const scaleY = logicalHeight / rect.height;
     return {
-      x: Math.round((e.clientX - rect.left) * scaleX * 10) / 10,
-      y: Math.round((e.clientY - rect.top) * scaleY * 10) / 10,
-      pressure: e.pressure && e.pressure > 0 ? e.pressure : 0.5,
+      x: Math.round((clientX - rect.left) * scaleX * 10) / 10,
+      y: Math.round((clientY - rect.top) * scaleY * 10) / 10,
+      pressure: pressure && pressure > 0 ? pressure : 0.5,
     };
   };
 
   const eraseNearPoint = (pt: DrawingPoint) => {
     const threshold = 16;
-    const filtered = drawing.strokes.filter((stroke) => {
+    const filtered = strokesRef.current.filter((stroke) => {
       if (stroke.points.length === 1) {
         return Math.hypot(pt.x - stroke.points[0].x, pt.y - stroke.points[0].y) > threshold;
       }
@@ -136,19 +163,48 @@ export const DrawingCanvasBlock: React.FC<DrawingCanvasBlockProps> = ({
       }
       return true;
     });
-    if (filtered.length !== drawing.strokes.length) {
+    if (filtered.length !== strokesRef.current.length) {
+      strokesRef.current = filtered;
+      redraw();
       onChangeDrawing({ ...drawing, strokes: filtered });
     }
   };
 
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (e.pointerType === 'touch') return;
-    e.preventDefault();
-    e.currentTarget.setPointerCapture(e.pointerId);
-    isDrawingRef.current = true;
-    const pt = getRelativePoint(e);
+    if (e.pointerType === 'touch') {
+      if (
+        isLikelyPalmTouch(e, penGuardUntilRef.current) ||
+        isDrawingRef.current ||
+        fingerScrollRef.current !== null
+      ) {
+        return;
+      }
+      fingerScrollRef.current = {
+        pointerId: e.pointerId,
+        lastX: e.clientX,
+        lastY: e.clientY,
+      };
+      return;
+    }
 
-    if (activeTool === 'eraser') {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+
+    penGuardUntilRef.current = Date.now() + 900;
+    fingerScrollRef.current = null;
+    e.preventDefault();
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // Ignore synthetic capture failures
+    }
+
+    isDrawingRef.current = true;
+    activePointerIdRef.current = e.pointerId;
+    const forceEraser = isStylusEraserEvent(e);
+    isBarrelEraserRef.current = forceEraser;
+    const pt = toRelativePoint(e.clientX, e.clientY, e.pressure);
+
+    if (activeTool === 'eraser' || forceEraser) {
       eraseNearPoint(pt);
       return;
     }
@@ -165,34 +221,89 @@ export const DrawingCanvasBlock: React.FC<DrawingCanvasBlockProps> = ({
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (e.pointerType === 'touch' || !isDrawingRef.current) return;
-    const pt = getRelativePoint(e);
+    if (e.pointerType === 'pen') {
+      penGuardUntilRef.current = Date.now() + 800;
+    }
 
-    if (activeTool === 'eraser') {
-      eraseNearPoint(pt);
+    if (e.pointerType === 'touch') {
+      const currentPan = fingerScrollRef.current;
+      if (!currentPan || currentPan.pointerId !== e.pointerId) return;
+      if (isLikelyPalmTouch(e, penGuardUntilRef.current) || isDrawingRef.current) {
+        fingerScrollRef.current = null;
+        return;
+      }
+      const dx = e.clientX - currentPan.lastX;
+      const dy = e.clientY - currentPan.lastY;
+      currentPan.lastX = e.clientX;
+      currentPan.lastY = e.clientY;
+      scrollEditorByTouchDelta(e.currentTarget, dx, dy);
       return;
     }
 
-    if (!activeStrokeRef.current) return;
-    const pts = activeStrokeRef.current.points;
-    const last = pts[pts.length - 1];
-    if (last && Math.hypot(pt.x - last.x, pt.y - last.y) < 1.5) return;
-    pts.push(pt);
-    redraw(activeStrokeRef.current);
+    if (!isDrawingRef.current || activePointerIdRef.current !== e.pointerId) return;
+    penGuardUntilRef.current = Date.now() + 900;
+
+    const nativeEv = e.nativeEvent;
+    const coalesced =
+      typeof nativeEv.getCoalescedEvents === 'function' ? nativeEv.getCoalescedEvents() : null;
+    const samples = coalesced && coalesced.length > 0 ? coalesced : [nativeEv];
+
+    for (const sample of samples) {
+      const forceEraser = isStylusEraserEvent(sample);
+      const pt = toRelativePoint(sample.clientX, sample.clientY, sample.pressure);
+
+      if (forceEraser && !isBarrelEraserRef.current) {
+        isBarrelEraserRef.current = true;
+        activeStrokeRef.current = null;
+        redraw();
+      }
+
+      if (activeTool === 'eraser' || isBarrelEraserRef.current || forceEraser) {
+        eraseNearPoint(pt);
+        continue;
+      }
+
+      if (!activeStrokeRef.current) continue;
+      const pts = activeStrokeRef.current.points;
+      const last = pts[pts.length - 1];
+      if (last && Math.hypot(pt.x - last.x, pt.y - last.y) < 1.5) continue;
+      pts.push(pt);
+      redraw(activeStrokeRef.current);
+    }
   };
 
-  const handlePointerUp = () => {
-    if (!isDrawingRef.current) return;
-    isDrawingRef.current = false;
+  const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (e.pointerType === 'touch') {
+      if (fingerScrollRef.current?.pointerId === e.pointerId) {
+        fingerScrollRef.current = null;
+      }
+      return;
+    }
+    if (!isDrawingRef.current || activePointerIdRef.current !== e.pointerId) return;
+    try {
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+    } catch {
+      // Ignore capture release failures
+    }
 
-    if (activeTool !== 'eraser' && activeStrokeRef.current) {
+    const wasEraser = activeTool === 'eraser' || isBarrelEraserRef.current;
+    isDrawingRef.current = false;
+    activePointerIdRef.current = null;
+    isBarrelEraserRef.current = false;
+    penGuardUntilRef.current = Date.now() + 700;
+
+    if (!wasEraser && activeStrokeRef.current) {
       const completed = activeStrokeRef.current;
       activeStrokeRef.current = null;
       setRedoStack([]);
       onChangeDrawing({
         ...drawing,
-        strokes: [...drawing.strokes, completed],
+        strokes: [...strokesRef.current, completed],
       });
+    } else {
+      activeStrokeRef.current = null;
     }
   };
 
@@ -388,11 +499,17 @@ export const DrawingCanvasBlock: React.FC<DrawingCanvasBlockProps> = ({
         ref={canvasRef}
         width={logicalWidth}
         height={logicalHeight}
+        onContextMenu={(e) => e.preventDefault()}
+        onPointerEnter={(e) => {
+          if (e.pointerType === 'pen') {
+            penGuardUntilRef.current = Date.now() + 800;
+          }
+        }}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
-        className="w-full h-auto block touch-pan-x touch-pan-y cursor-crosshair select-none"
+        className="w-full h-auto block touch-none cursor-crosshair select-none"
       />
       {drawing.strokes.length === 0 && (
         <div

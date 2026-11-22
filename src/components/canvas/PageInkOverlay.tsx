@@ -1,6 +1,11 @@
 import React, { useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import type { DrawingPoint, DrawingStroke, PdfTextBox, PenTool as PenToolType } from '../../types/notes';
 import { renderStrokesToContext } from '../../utils/canvasRender';
+import {
+  isLikelyPalmTouch,
+  isStylusEraserEvent,
+  scrollEditorByTouchDelta,
+} from '../../utils/stylusUtils';
 
 const LOGICAL_WIDTH = 900;
 
@@ -192,6 +197,7 @@ interface PageInkOverlayProps {
   isSheetDark?: boolean;
   pdfTextBoxes?: PdfTextBox[];
   pdfAspectRatio?: number;
+  onActivatePage?: () => void;
   onChangeStrokes: (strokes: DrawingStroke[]) => void;
 }
 
@@ -209,38 +215,48 @@ export const PageInkOverlay = React.forwardRef<PageInkOverlayHandle, PageInkOver
       isSheetDark = false,
       pdfTextBoxes,
       pdfAspectRatio = 210 / 297,
+      onActivatePage,
       onChangeStrokes,
     },
     ref
   ) => {
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const [logicalHeight, setLogicalHeight] = useState(760);
-    const [isDrawingExternalPen, setIsDrawingExternalPen] = useState(false);
 
     const isDrawingRef = useRef(false);
+    const isBarrelEraserStrokeRef = useRef(false);
     const activePointerIdRef = useRef<number | null>(null);
     const activeStrokeRef = useRef<DrawingStroke | null>(null);
     const rawHighlightPointsRef = useRef<DrawingPoint[]>([]);
     const snappedHighlightStrokesRef = useRef<DrawingStroke[]>([]);
     const strokesRef = useRef(strokes);
     strokesRef.current = strokes;
+    const penGuardUntilRef = useRef(0);
+    const fingerScrollRef = useRef<{ pointerId: number; lastX: number; lastY: number } | null>(null);
     const cleanupExternalListenersRef = useRef<(() => void) | null>(null);
 
-    // Prevent browser scroll only when an Apple Pencil / stylus touch starts; finger touch ALWAYS scrolls
+    // Block native browser touch-scroll/gesture hijacking on the canvas while ink mode or stylus is active;
+    // JS pointer handlers manage both continuous S Pen ink and clean 1-finger page panning.
     useEffect(() => {
       const canvas = canvasRef.current;
       if (!canvas) return;
-      const handleTouchStart = (ev: TouchEvent) => {
+      const handleTouchPrevent = (ev: TouchEvent) => {
+        if (isInkMode || isDrawingRef.current || Date.now() < penGuardUntilRef.current) {
+          ev.preventDefault();
+          return;
+        }
         const firstTouch = ev.touches[0] as (Touch & { touchType?: string }) | undefined;
         if (firstTouch?.touchType === 'stylus') {
           ev.preventDefault();
         }
       };
-      canvas.addEventListener('touchstart', handleTouchStart, { passive: false });
+      canvas.addEventListener('touchstart', handleTouchPrevent, { passive: false });
+      canvas.addEventListener('touchmove', handleTouchPrevent, { passive: false });
       return () => {
-        canvas.removeEventListener('touchstart', handleTouchStart);
+        canvas.removeEventListener('touchstart', handleTouchPrevent);
+        canvas.removeEventListener('touchmove', handleTouchPrevent);
       };
-    }, []);
+    }, [isInkMode]);
 
     useEffect(() => {
       return () => {
@@ -318,21 +334,30 @@ export const PageInkOverlay = React.forwardRef<PageInkOverlayHandle, PageInkOver
           return true;
         });
         if (filtered.length !== strokesRef.current.length) {
+          strokesRef.current = filtered;
+          redraw();
           onChangeStrokes(filtered);
         }
       },
-      [onChangeStrokes, eraserWidth]
+      [onChangeStrokes, eraserWidth, redraw]
     );
 
     const startStrokeAt = useCallback(
-      (clientX: number, clientY: number, pressure: number, pointerId: number) => {
+      (
+        clientX: number,
+        clientY: number,
+        pressure: number,
+        pointerId: number,
+        forceEraser = false
+      ) => {
         if (!canvasRef.current) return;
         isDrawingRef.current = true;
         activePointerIdRef.current = pointerId;
-        canvasRef.current.style.touchAction = 'none';
+        isBarrelEraserStrokeRef.current = forceEraser;
+        penGuardUntilRef.current = Date.now() + 900;
         const pt = toLogicalPoint(clientX, clientY, pressure);
 
-        if (tool === 'eraser') {
+        if (tool === 'eraser' || forceEraser) {
           eraseNear(pt);
           return;
         }
@@ -381,11 +406,26 @@ export const PageInkOverlay = React.forwardRef<PageInkOverlayHandle, PageInkOver
     );
 
     const moveStrokeAt = useCallback(
-      (clientX: number, clientY: number, pressure: number, pointerId: number) => {
+      (
+        clientX: number,
+        clientY: number,
+        pressure: number,
+        pointerId: number,
+        forceEraser = false
+      ) => {
         if (!isDrawingRef.current || activePointerIdRef.current !== pointerId) return;
+        penGuardUntilRef.current = Date.now() + 900;
         const pt = toLogicalPoint(clientX, clientY, pressure);
 
-        if (tool === 'eraser') {
+        if (forceEraser && !isBarrelEraserStrokeRef.current) {
+          isBarrelEraserStrokeRef.current = true;
+          activeStrokeRef.current = null;
+          rawHighlightPointsRef.current = [];
+          snappedHighlightStrokesRef.current = [];
+          redraw();
+        }
+
+        if (tool === 'eraser' || isBarrelEraserStrokeRef.current || forceEraser) {
           eraseNear(pt);
           return;
         }
@@ -432,16 +472,15 @@ export const PageInkOverlay = React.forwardRef<PageInkOverlayHandle, PageInkOver
         if (!isDrawingRef.current) return;
         if (pointerId !== undefined && activePointerIdRef.current !== pointerId) return;
 
+        const wasEraser = tool === 'eraser' || isBarrelEraserStrokeRef.current;
         isDrawingRef.current = false;
         activePointerIdRef.current = null;
-        if (canvasRef.current) {
-          canvasRef.current.style.touchAction = 'pan-x pan-y';
-        }
+        isBarrelEraserStrokeRef.current = false;
+        penGuardUntilRef.current = Date.now() + 700;
         cleanupExternalListenersRef.current?.();
         cleanupExternalListenersRef.current = null;
-        setIsDrawingExternalPen(false);
 
-        if (tool !== 'eraser' && activeStrokeRef.current) {
+        if (!wasEraser && activeStrokeRef.current) {
           const snapped = snappedHighlightStrokesRef.current;
           const completed = activeStrokeRef.current;
           activeStrokeRef.current = null;
@@ -453,6 +492,10 @@ export const PageInkOverlay = React.forwardRef<PageInkOverlayHandle, PageInkOver
           } else {
             onChangeStrokes([...strokesRef.current, completed]);
           }
+        } else {
+          activeStrokeRef.current = null;
+          rawHighlightPointsRef.current = [];
+          snappedHighlightStrokesRef.current = [];
         }
       },
       [tool, onChangeStrokes]
@@ -469,14 +512,34 @@ export const PageInkOverlay = React.forwardRef<PageInkOverlayHandle, PageInkOver
         beginExternalPenStroke(e: React.PointerEvent<HTMLElement>) {
           if (e.pointerType === 'touch') return;
           cleanupExternalListenersRef.current?.();
-          setIsDrawingExternalPen(true);
+          fingerScrollRef.current = null;
+          penGuardUntilRef.current = Date.now() + 900;
           const pointerId = e.pointerId;
-          startStrokeAt(e.clientX, e.clientY, e.pressure, pointerId);
+          const targetEl = e.currentTarget;
+          targetEl.style.touchAction = 'none';
+          startStrokeAt(
+            e.clientX,
+            e.clientY,
+            e.pressure,
+            pointerId,
+            isStylusEraserEvent(e)
+          );
 
           const handleWinMove = (ev: PointerEvent) => {
             if (ev.pointerId === pointerId) {
               ev.preventDefault();
-              moveStrokeRef.current(ev.clientX, ev.clientY, ev.pressure, ev.pointerId);
+              const coalesced =
+                typeof ev.getCoalescedEvents === 'function' ? ev.getCoalescedEvents() : null;
+              const samples = coalesced && coalesced.length > 0 ? coalesced : [ev];
+              for (const sample of samples) {
+                moveStrokeRef.current(
+                  sample.clientX,
+                  sample.clientY,
+                  sample.pressure,
+                  ev.pointerId,
+                  isStylusEraserEvent(sample)
+                );
+              }
             }
           };
           const handleWinUp = (ev: PointerEvent) => {
@@ -484,14 +547,23 @@ export const PageInkOverlay = React.forwardRef<PageInkOverlayHandle, PageInkOver
               finishStrokeRef.current(ev.pointerId);
             }
           };
+          const handleWinTouch = (ev: TouchEvent) => {
+            if (isDrawingRef.current) {
+              ev.preventDefault();
+            }
+          };
 
           window.addEventListener('pointermove', handleWinMove, { passive: false });
           window.addEventListener('pointerup', handleWinUp);
           window.addEventListener('pointercancel', handleWinUp);
+          window.addEventListener('touchstart', handleWinTouch, { passive: false });
+          window.addEventListener('touchmove', handleWinTouch, { passive: false });
           cleanupExternalListenersRef.current = () => {
             window.removeEventListener('pointermove', handleWinMove);
             window.removeEventListener('pointerup', handleWinUp);
             window.removeEventListener('pointercancel', handleWinUp);
+            window.removeEventListener('touchstart', handleWinTouch);
+            window.removeEventListener('touchmove', handleWinTouch);
           };
         },
         exportPngDataUrl() {
@@ -514,36 +586,121 @@ export const PageInkOverlay = React.forwardRef<PageInkOverlayHandle, PageInkOver
         ref={canvasRef}
         width={LOGICAL_WIDTH}
         height={logicalHeight}
+        onContextMenu={(e) => e.preventDefault()}
+        onPointerEnter={(e) => {
+          if (e.pointerType === 'pen') {
+            penGuardUntilRef.current = Date.now() + 800;
+          }
+        }}
         onPointerDown={(e) => {
-          // Finger touch MUST only scroll/move pages; only pen (or desktop mouse) writes/highlights/erases
-          if (e.pointerType === 'touch') return;
+          if (e.pointerType === 'touch') {
+            // Reject resting palm/hand contacts or touches while pen is hovering/writing
+            if (
+              isLikelyPalmTouch(e, penGuardUntilRef.current) ||
+              isDrawingRef.current ||
+              fingerScrollRef.current !== null
+            ) {
+              return;
+            }
+            fingerScrollRef.current = {
+              pointerId: e.pointerId,
+              lastX: e.clientX,
+              lastY: e.clientY,
+            };
+            return;
+          }
+
           if (!isInkMode && e.pointerType !== 'pen') return;
+          if (e.pointerType === 'mouse' && e.button !== 0) return;
+
+          penGuardUntilRef.current = Date.now() + 900;
+          fingerScrollRef.current = null;
+          onActivatePage?.();
           e.preventDefault();
-          e.currentTarget.setPointerCapture(e.pointerId);
-          startStrokeAt(e.clientX, e.clientY, e.pressure, e.pointerId);
+          try {
+            e.currentTarget.setPointerCapture(e.pointerId);
+          } catch {
+            // Ignore synthetic pointer capture issues
+          }
+          startStrokeAt(
+            e.clientX,
+            e.clientY,
+            e.pressure,
+            e.pointerId,
+            isStylusEraserEvent(e)
+          );
         }}
         onPointerMove={(e) => {
-          if (e.pointerType === 'touch') return;
+          if (e.pointerType === 'pen') {
+            penGuardUntilRef.current = Date.now() + 800;
+          }
+
+          if (e.pointerType === 'touch') {
+            const currentPan = fingerScrollRef.current;
+            if (!currentPan || currentPan.pointerId !== e.pointerId) return;
+            if (isLikelyPalmTouch(e, penGuardUntilRef.current) || isDrawingRef.current) {
+              fingerScrollRef.current = null;
+              return;
+            }
+            const dx = e.clientX - currentPan.lastX;
+            const dy = e.clientY - currentPan.lastY;
+            currentPan.lastX = e.clientX;
+            currentPan.lastY = e.clientY;
+            scrollEditorByTouchDelta(e.currentTarget, dx, dy);
+            return;
+          }
+
           if (!isInkMode && e.pointerType !== 'pen') return;
-          moveStrokeAt(e.clientX, e.clientY, e.pressure, e.pointerId);
+          if (!isDrawingRef.current || activePointerIdRef.current !== e.pointerId) return;
+
+          const nativeEv = e.nativeEvent;
+          const coalesced =
+            typeof nativeEv.getCoalescedEvents === 'function'
+              ? nativeEv.getCoalescedEvents()
+              : null;
+          const samples = coalesced && coalesced.length > 0 ? coalesced : [nativeEv];
+          for (const sample of samples) {
+            moveStrokeAt(
+              sample.clientX,
+              sample.clientY,
+              sample.pressure,
+              e.pointerId,
+              isStylusEraserEvent(sample)
+            );
+          }
         }}
         onPointerUp={(e) => {
-          if (e.pointerType === 'touch') return;
+          if (e.pointerType === 'touch') {
+            if (fingerScrollRef.current?.pointerId === e.pointerId) {
+              fingerScrollRef.current = null;
+            }
+            return;
+          }
+          try {
+            if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+              e.currentTarget.releasePointerCapture(e.pointerId);
+            }
+          } catch {
+            // Ignore capture release errors
+          }
           finishStroke(e.pointerId);
         }}
         onPointerCancel={(e) => {
-          if (e.pointerType === 'touch') return;
+          if (e.pointerType === 'touch') {
+            if (fingerScrollRef.current?.pointerId === e.pointerId) {
+              fingerScrollRef.current = null;
+            }
+            return;
+          }
           finishStroke(e.pointerId);
         }}
-        className={`absolute inset-0 z-20 h-full w-full select-none touch-pan-x touch-pan-y ${
+        className={`absolute inset-0 z-20 h-full w-full select-none ${
           isInkMode
-            ? `pointer-events-auto ${
+            ? `pointer-events-auto touch-none ${
                 tool === 'highlighter' && pdfTextBoxes && pdfTextBoxes.length > 0
                   ? 'cursor-text'
                   : 'cursor-crosshair'
               }`
-            : isDrawingExternalPen
-            ? 'pointer-events-none'
             : 'pointer-events-none'
         }`}
       />

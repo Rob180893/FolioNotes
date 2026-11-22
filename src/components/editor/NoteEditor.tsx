@@ -1862,6 +1862,7 @@ export const NoteEditor: React.FC = () => {
 
       {/* Scrollable Sheet Canvas (Vertical, Horizontal, or Horizontal 2-Page Spread) */}
       <div
+        data-editor-scroll="true"
         onDragOver={(e) => {
           if (e.dataTransfer?.types.includes('Files')) {
             e.preventDefault();

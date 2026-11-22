@@ -41,6 +41,30 @@ const WorkspaceShell: React.FC = () => {
     }
   }, [state.activeView, activePage?.id]);
 
+  // Configure native Capacitor StatusBar so Android tablet status bar never overlaps the top header
+  useEffect(() => {
+    const cap = (window as unknown as {
+      Capacitor?: {
+        isNativePlatform?: () => boolean;
+        Plugins?: {
+          StatusBar?: {
+            setOverlaysWebView?: (opts: { overlay: boolean }) => Promise<void>;
+            setStyle?: (opts: { style: 'DARK' | 'LIGHT' }) => Promise<void>;
+            setBackgroundColor?: (opts: { color: string }) => Promise<void>;
+          };
+        };
+      };
+    }).Capacitor;
+
+    const statusBar = cap?.Plugins?.StatusBar;
+    if (!statusBar) return;
+
+    const isDark = state.theme === 'dark';
+    void statusBar.setOverlaysWebView?.({ overlay: false }).catch(() => {});
+    void statusBar.setStyle?.({ style: isDark ? 'DARK' : 'LIGHT' }).catch(() => {});
+    void statusBar.setBackgroundColor?.({ color: isDark ? '#0f172a' : '#ffffff' }).catch(() => {});
+  }, [state.theme]);
+
   const handleQuickNewPage = () => {
     const targetSection =
       activeSection ?? state.sections.find((s) => s.notebookId === activeNotebook?.id) ?? state.sections[0];
@@ -59,9 +83,10 @@ const WorkspaceShell: React.FC = () => {
   };
 
   return (
-    <div className="flex h-dvh w-full flex-col overflow-hidden bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
+    <div className="flex h-dvh w-full flex-col overflow-hidden bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100 pb-[env(safe-area-inset-bottom)]">
       {/* Top Application Header */}
-      <header className="no-print flex h-13 sm:h-14 shrink-0 items-center justify-between gap-2 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 sm:px-5">
+      <header className="no-print shrink-0 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 pt-[env(safe-area-inset-top)]">
+        <div className="flex h-13 sm:h-14 items-center justify-between gap-2 pl-[max(0.625rem,env(safe-area-inset-left))] pr-[max(0.625rem,env(safe-area-inset-right))] sm:px-5">
         {/* Left: Sidebar Toggle + Brand Wordmark */}
         <div className="flex items-center gap-2 min-w-0">
           <button
@@ -155,6 +180,7 @@ const WorkspaceShell: React.FC = () => {
             <Plus className="w-3.5 h-3.5" />
             <span className="hidden md:inline">Nova Página</span>
           </button>
+        </div>
         </div>
       </header>
 

@@ -72,12 +72,18 @@ export const PageSheet: React.FC<PageSheetProps> = ({
   const inkOverlayRef = useRef<PageInkOverlayHandle | null>(null);
   const registerSheetRef = useRef(registerSheetElement);
   const registerInkRef = useRef(registerInkOverlay);
+  const penHoverResetTimerRef = useRef<number | null>(null);
   registerSheetRef.current = registerSheetElement;
   registerInkRef.current = registerInkOverlay;
 
   useEffect(() => {
     registerSheetRef.current(sheetRef.current);
-    return () => registerSheetRef.current(null);
+    return () => {
+      registerSheetRef.current(null);
+      if (penHoverResetTimerRef.current !== null) {
+        window.clearTimeout(penHoverResetTimerRef.current);
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -111,6 +117,20 @@ export const PageSheet: React.FC<PageSheetProps> = ({
 
   let numberedCounter = 0;
 
+  const armPenTouchAction = () => {
+    const el = sheetRef.current;
+    if (!el) return;
+    el.style.touchAction = 'none';
+    if (penHoverResetTimerRef.current !== null) {
+      window.clearTimeout(penHoverResetTimerRef.current);
+    }
+    penHoverResetTimerRef.current = window.setTimeout(() => {
+      if (sheetRef.current && !isInkMode) {
+        sheetRef.current.style.touchAction = '';
+      }
+    }, 900);
+  };
+
   return (
     <div
       ref={sheetRef}
@@ -120,13 +140,21 @@ export const PageSheet: React.FC<PageSheetProps> = ({
       onFocusCapture={() => {
         if (!isActive) onActivate();
       }}
+      onContextMenuCapture={(e) => {
+        if (isInkMode) e.preventDefault();
+      }}
+      onPointerOverCapture={(e) => {
+        if (e.pointerType === 'pen') armPenTouchAction();
+      }}
+      onPointerMoveCapture={(e) => {
+        if (e.pointerType === 'pen') armPenTouchAction();
+      }}
       onPointerDownCapture={(e) => {
-        if (!isActive) onActivate();
-        // Finger touch MUST strictly scroll/move pages; never write, highlight, or erase
         if (e.pointerType === 'touch') return;
-        const shouldStartExternalStroke =
-          (e.pointerType === 'pen' && !(isActive && isInkMode)) ||
-          (isInkMode && !isActive);
+        if (!isActive) onActivate();
+        if (e.pointerType === 'pen') armPenTouchAction();
+
+        const shouldStartExternalStroke = e.pointerType === 'pen' && !isInkMode;
         if (shouldStartExternalStroke) {
           const target = e.target as HTMLElement | null;
           if (target?.closest('button, a, select, canvas, [data-no-pen-ink]')) {
@@ -153,7 +181,9 @@ export const PageSheet: React.FC<PageSheetProps> = ({
         isActive
           ? 'print-only-sheet ring-2 ring-indigo-500/30 border-indigo-400/70 dark:border-indigo-600/70'
           : 'no-print border-slate-200/90 dark:border-slate-800'
-      } ${isHorizontalLayout ? 'shrink-0' : 'mx-auto'} group/sheet relative flex flex-col overflow-hidden rounded-2xl border shadow-sm px-6 sm:px-14 ${
+      } ${isHorizontalLayout ? 'shrink-0' : 'mx-auto'} ${
+        isInkMode ? 'touch-none' : ''
+      } group/sheet relative flex flex-col overflow-hidden rounded-2xl border shadow-sm px-6 sm:px-14 ${
         page.pdfBackground ? 'py-5 sm:py-6' : 'py-8 sm:py-12'
       } transition-[width,min-height,background-color,colors] duration-200 ${paperClass}`}
     >
@@ -175,7 +205,7 @@ export const PageSheet: React.FC<PageSheetProps> = ({
         ref={inkOverlayRef}
         sheetRef={sheetRef}
         strokes={page.inkStrokes || []}
-        isInkMode={isActive && isInkMode}
+        isInkMode={isInkMode}
         tool={penTool}
         color={penColor}
         strokeWidth={penWidth}
@@ -184,6 +214,7 @@ export const PageSheet: React.FC<PageSheetProps> = ({
         isSheetDark={isSheetDark && !page.pdfBackground}
         pdfTextBoxes={page.pdfBackground?.textBoxes}
         pdfAspectRatio={pdfAspectRatio}
+        onActivatePage={onActivate}
         onChangeStrokes={(nextStrokes) => onUpdatePage({ inkStrokes: nextStrokes })}
       />
 
