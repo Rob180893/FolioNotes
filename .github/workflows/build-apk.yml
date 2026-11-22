@@ -25,23 +25,22 @@ jobs:
 
       - name: Instalar dependências e gerar build web
         run: |
-          npm install --legacy-peer-deps
+          npm install --legacy-peer-deps --no-audit --no-fund
           npm run build
 
       - name: Configurar Capacitor e projeto Android
         run: |
-          npm install --legacy-peer-deps @capacitor/core@7 @capacitor/cli@7 @capacitor/android@7
-          if [ ! -f capacitor.config.ts ] && [ ! -f capacitor.config.json ]; then
-            npx cap init "FolioNotes" "com.folionotes.app" --web-dir dist
-          fi
+          npm install --legacy-peer-deps --no-audit --no-fund @capacitor/core@7 @capacitor/cli@7 @capacitor/android@7
+          node -e "const fs=require('fs'); if(!fs.existsSync('capacitor.config.json')&&!fs.existsSync('capacitor.config.ts')) fs.writeFileSync('capacitor.config.json', JSON.stringify({appId:'com.folionotes.app',appName:'FolioNotes',webDir:'dist'},null,2));"
           if [ ! -d android ]; then
             npx cap add android
           fi
           npx cap sync android
 
-      - name: Compilar APK
+      - name: Aceitar licenças Android SDK e compilar APK
         working-directory: android
         run: |
+          yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
           chmod +x gradlew
           ./gradlew assembleDebug
 
