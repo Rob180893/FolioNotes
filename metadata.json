@@ -1,0 +1,6 @@
+{
+  "name": "FolioNotes",
+  "description": "Aplicativo moderno de anotações e organização pessoal combinando cadernos, seções coloridas, editor em blocos, desenho livre, áudio e assistente Gemini.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

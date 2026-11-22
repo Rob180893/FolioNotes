@@ -1,0 +1,133 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    --font-display: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    --font-body: 'DM Sans', system-ui, -apple-system, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+  }
+
+  body {
+    font-family: var(--font-body);
+  }
+
+  h1, h2, h3, h4, .font-display {
+    font-family: var(--font-display);
+  }
+
+  code, pre, .font-mono {
+    font-family: var(--font-mono);
+  }
+}
+
+/* Tactile Sheet Theme & Paper Surface Styles */
+.sheet-light {
+  --sheet-bg: #ffffff;
+  --sheet-ink: #0f172a;
+  --sheet-ink-muted: #64748b;
+  --sheet-placeholder: rgba(100, 116, 139, 0.55);
+  --sheet-surface: rgba(248, 250, 252, 0.85);
+  --sheet-border: rgba(203, 213, 225, 0.85);
+  --sheet-line: rgba(148, 163, 184, 0.3);
+  --sheet-margin: rgba(239, 68, 68, 0.22);
+  --sheet-grid: rgba(148, 163, 184, 0.22);
+  --sheet-dot: rgba(100, 116, 139, 0.34);
+  background-color: var(--sheet-bg);
+  color: var(--sheet-ink);
+}
+
+.sheet-dark {
+  --sheet-bg: #171c26;
+  --sheet-ink: #f1f5f9;
+  --sheet-ink-muted: #94a3b8;
+  --sheet-placeholder: rgba(148, 163, 184, 0.45);
+  --sheet-surface: rgba(30, 41, 59, 0.65);
+  --sheet-border: rgba(71, 85, 105, 0.6);
+  --sheet-line: rgba(148, 163, 184, 0.16);
+  --sheet-margin: rgba(248, 113, 113, 0.2);
+  --sheet-grid: rgba(148, 163, 184, 0.13);
+  --sheet-dot: rgba(148, 163, 184, 0.26);
+  background-color: var(--sheet-bg);
+  color: var(--sheet-ink);
+}
+
+.paper-plain {
+  background-color: var(--sheet-bg);
+}
+
+.paper-ruled {
+  background-color: var(--sheet-bg);
+  background-image:
+    linear-gradient(to right, transparent 55px, var(--sheet-margin) 55px, var(--sheet-margin) 56px, transparent 56px),
+    repeating-linear-gradient(to bottom, transparent 0px, transparent 31px, var(--sheet-line) 31px, var(--sheet-line) 32px);
+  background-position: 0 12px;
+}
+
+.paper-grid {
+  background-color: var(--sheet-bg);
+  background-image:
+    linear-gradient(to right, var(--sheet-grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--sheet-grid) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+.paper-dotted {
+  background-color: var(--sheet-bg);
+  background-image: radial-gradient(var(--sheet-dot) 1.25px, transparent 1.25px);
+  background-size: 22px 22px;
+}
+
+/* Custom subtle scrollbars */
+.scrollbar-thin::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.35);
+  border-radius: 9999px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.6);
+}
+
+/* Safe area padding for mobile PWAs */
+.pb-safe {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}
+
+/* Clean PDF Print Formatting */
+@media print {
+  @page {
+    margin: 18mm 16mm;
+  }
+  body {
+    background: #ffffff !important;
+    color: #0f172a !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+  .print-only-sheet {
+    --sheet-bg: #ffffff !important;
+    --sheet-ink: #0f172a !important;
+    --sheet-ink-muted: #64748b !important;
+    background-color: #ffffff !important;
+    color: #0f172a !important;
+    box-shadow: none !important;
+    border: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    max-width: 100% !important;
+    width: 100% !important;
+  }
+  .print-pdf-img,
+  .print-pdf-layer,
+  .print-pdf-layer canvas {
+    filter: none !important;
+    mix-blend-mode: normal !important;
+  }
+}
