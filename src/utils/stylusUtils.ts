@@ -15,11 +15,35 @@ declare global {
   interface Window {
     __folioNativeStylusEraser?: boolean;
     __folioNativeStylusBridgeActive?: boolean;
+    __folioMultiTouchUntil?: number;
+    __folioLastPenActivityAt?: number;
   }
 }
 
 export function hasNativeStylusBridge(): boolean {
   return typeof window !== 'undefined' && window.__folioNativeStylusBridgeActive === true;
+}
+
+export function markPenActivity(): void {
+  if (typeof window !== 'undefined') {
+    window.__folioLastPenActivityAt = Date.now();
+  }
+}
+
+export function isRecentPenActivity(windowMs = 600): boolean {
+  if (typeof window === 'undefined') return false;
+  return Date.now() - (window.__folioLastPenActivityAt ?? 0) < windowMs;
+}
+
+export function markMultiTouchPinch(durationMs = 320): void {
+  if (typeof window !== 'undefined') {
+    window.__folioMultiTouchUntil = Date.now() + durationMs;
+  }
+}
+
+export function isMultiTouchActive(): boolean {
+  if (typeof window === 'undefined') return false;
+  return Date.now() < (window.__folioMultiTouchUntil ?? 0);
 }
 
 /**

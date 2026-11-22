@@ -15,7 +15,9 @@ import type { DrawingData, DrawingPoint, DrawingStroke, PenTool as PenToolType }
 import { exportDrawingToPngDataUrl, renderStrokesToContext } from '../../utils/canvasRender';
 import {
   isLikelyPalmTouch,
+  isMultiTouchActive,
   isStylusEraserEvent,
+  markPenActivity,
   scrollEditorByTouchDelta,
 } from '../../utils/stylusUtils';
 
@@ -175,8 +177,10 @@ export const DrawingCanvasBlock: React.FC<DrawingCanvasBlockProps> = ({
       if (
         isLikelyPalmTouch(e, penGuardUntilRef.current) ||
         isDrawingRef.current ||
+        isMultiTouchActive() ||
         fingerScrollRef.current !== null
       ) {
+        fingerScrollRef.current = null;
         return;
       }
       fingerScrollRef.current = {
@@ -190,6 +194,7 @@ export const DrawingCanvasBlock: React.FC<DrawingCanvasBlockProps> = ({
     if (e.pointerType === 'mouse' && e.button !== 0) return;
 
     penGuardUntilRef.current = Date.now() + 900;
+    if (e.pointerType === 'pen') markPenActivity();
     fingerScrollRef.current = null;
     e.preventDefault();
     try {
@@ -223,12 +228,17 @@ export const DrawingCanvasBlock: React.FC<DrawingCanvasBlockProps> = ({
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (e.pointerType === 'pen') {
       penGuardUntilRef.current = Date.now() + 800;
+      markPenActivity();
     }
 
     if (e.pointerType === 'touch') {
+      if (isMultiTouchActive() || isDrawingRef.current) {
+        fingerScrollRef.current = null;
+        return;
+      }
       const currentPan = fingerScrollRef.current;
       if (!currentPan || currentPan.pointerId !== e.pointerId) return;
-      if (isLikelyPalmTouch(e, penGuardUntilRef.current) || isDrawingRef.current) {
+      if (isLikelyPalmTouch(e, penGuardUntilRef.current)) {
         fingerScrollRef.current = null;
         return;
       }

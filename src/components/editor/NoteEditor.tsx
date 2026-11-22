@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Check,
   CheckSquare,
@@ -70,6 +70,7 @@ import {
 } from '../../services/export/exportService';
 import { exportDrawingToPngDataUrl } from '../../utils/canvasRender';
 import { extractPdfPages } from '../../services/pdf/pdfImportService';
+import { isRecentPenActivity, markMultiTouchPinch } from '../../utils/stylusUtils';
 import type { PageInkOverlayHandle } from '../canvas/PageInkOverlay';
 import { PageSheet } from './PageSheet';
 
@@ -235,6 +236,28 @@ export const NoteEditor: React.FC = () => {
   const previousNonEraserToolRef = useRef<PenToolType>('fountain');
   const lastStylusButtonToggleAtRef = useRef<number>(0);
 
+  const [zoom, setZoom] = useState<number>(1);
+  const zoomRef = useRef<number>(1);
+  zoomRef.current = zoom;
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const sheetsContentRef = useRef<HTMLDivElement | null>(null);
+  const [baseSize, setBaseSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
+  const [viewportSize, setViewportSize] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
+  const baseSizeRef = useRef(baseSize);
+  baseSizeRef.current = baseSize;
+  const pendingZoomAnchorRef = useRef<{
+    unscaledX: number;
+    unscaledY: number;
+    viewRelX: number;
+    viewRelY: number;
+  } | null>(null);
+  const pinchSessionRef = useRef<{
+    startDist: number;
+    startZoom: number;
+    unscaledX: number;
+    unscaledY: number;
+  } | null>(null);
+
   const scrollDirection: ScrollDirection = state.scrollDirection ?? 'vertical';
 
   const orderedSectionPages = useMemo<NotePage[]>(() => {
@@ -326,6 +349,209 @@ export const NoteEditor: React.FC = () => {
       window.removeEventListener('folio-stylus-button-click', handleStylusButtonClick);
     };
   }, []);
+
+  // Reset zoom cleanly when switching scroll layout direction
+  useEffect(() => {
+    setZoom(1);
+    zoomRef.current = 1;
+  }, [scrollDirection]);
+
+  // Track unscaled sheet layout dimensions & viewport size for accurate pinch-to-zoom spacer & centering
+  useEffect(() => {
+    const scrollEl = scrollContainerRef.current;
+    const contentEl = sheetsContentRef.current;
+    if (!scrollEl || !contentEl) return;
+
+    const measure = () => {
+      setViewportSize((prev) =>
+        prev.width === scrollEl.clientWidth && prev.height === scrollEl.clientHeight
+          ? prev
+          : { width: scrollEl.clientWidth, height: scrollEl.clientHeight }
+      );
+      const w = contentEl.offsetWidth;
+      const h = contentEl.offsetHeight;
+      if (w > 0 && h > 0) {
+        setBaseSize((prev) => (prev.width === w && prev.height === h ? prev : { width: w, height: h }));
+      }
+    };
+
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(scrollEl);
+    observer.observe(contentEl);
+    return () => observer.disconnect();
+  }, [activePage?.id, scrollDirection, orderedSectionPages.length]);
+
+  // Keep the pinch/zoom focal point anchored immediately before paint
+  useLayoutEffect(() => {
+    const anchor = pendingZoomAnchorRef.current;
+    const scrollEl = scrollContainerRef.current;
+    if (!anchor || !scrollEl) return;
+    pendingZoomAnchorRef.current = null;
+
+    const scaledW = baseSizeRef.current.width * zoom;
+    const offsetLeft = zoom === 1 ? 0 : Math.max(0, (scrollEl.clientWidth - scaledW) / 2);
+    scrollEl.scrollLeft = Math.max(0, offsetLeft + anchor.unscaledX * zoom - anchor.viewRelX);
+    scrollEl.scrollTop = Math.max(0, anchor.unscaledY * zoom - anchor.viewRelY);
+  }, [zoom]);
+
+  // Two-finger pinch-to-zoom (+ trackpad Ctrl+Wheel zoom) on the sheet scroll viewport
+  useEffect(() => {
+    const scrollEl = scrollContainerRef.current;
+    if (!scrollEl) return;
+
+    const isTouchStylus = (t: Touch) =>
+      (t as Touch & { touchType?: string }).touchType === 'stylus';
+
+    const getTwoFingerMetrics = (touches: TouchList) => {
+      const t1 = touches[0];
+      const t2 = touches[1];
+      return {
+        dist: Math.max(12, Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY)),
+        midX: (t1.clientX + t2.clientX) / 2,
+        midY: (t1.clientY + t2.clientY) / 2,
+        hasStylus: isTouchStylus(t1) || isTouchStylus(t2),
+      };
+    };
+
+    const startPinchSession = (touches: TouchList) => {
+      const contentEl = sheetsContentRef.current;
+      if (!contentEl) return;
+      const { dist, midX, midY, hasStylus } = getTwoFingerMetrics(touches);
+      if (hasStylus) return;
+      const contentRect = contentEl.getBoundingClientRect();
+      const currZoom = zoomRef.current;
+      pinchSessionRef.current = {
+        startDist: dist,
+        startZoom: currZoom,
+        unscaledX: (midX - contentRect.left) / currZoom,
+        unscaledY: (midY - contentRect.top) / currZoom,
+      };
+    };
+
+    const handleTouchStart = (ev: TouchEvent) => {
+      if (ev.touches.length !== 2) {
+        if (ev.touches.length < 2) pinchSessionRef.current = null;
+        return;
+      }
+      if (isRecentPenActivity(550)) return;
+      const { hasStylus } = getTwoFingerMetrics(ev.touches);
+      if (hasStylus) return;
+
+      ev.preventDefault();
+      markMultiTouchPinch(450);
+      startPinchSession(ev.touches);
+    };
+
+    const handleTouchMove = (ev: TouchEvent) => {
+      if (ev.touches.length !== 2) return;
+      if (isRecentPenActivity(550)) {
+        pinchSessionRef.current = null;
+        return;
+      }
+      const { dist, midX, midY, hasStylus } = getTwoFingerMetrics(ev.touches);
+      if (hasStylus) return;
+
+      ev.preventDefault();
+      markMultiTouchPinch(450);
+
+      if (!pinchSessionRef.current) {
+        startPinchSession(ev.touches);
+        return;
+      }
+
+      const session = pinchSessionRef.current;
+      const rawNext = session.startZoom * (dist / session.startDist);
+      const nextZoom = Math.max(0.5, Math.min(3.0, Math.round(rawNext * 100) / 100));
+      const scrollRect = scrollEl.getBoundingClientRect();
+
+      pendingZoomAnchorRef.current = {
+        unscaledX: session.unscaledX,
+        unscaledY: session.unscaledY,
+        viewRelX: midX - scrollRect.left,
+        viewRelY: midY - scrollRect.top,
+      };
+
+      if (Math.abs(nextZoom - zoomRef.current) >= 0.005) {
+        zoomRef.current = nextZoom;
+        setZoom(nextZoom);
+      } else {
+        const anchor = pendingZoomAnchorRef.current;
+        pendingZoomAnchorRef.current = null;
+        const z = zoomRef.current;
+        const offsetLeft =
+          z === 1 ? 0 : Math.max(0, (scrollEl.clientWidth - baseSizeRef.current.width * z) / 2);
+        scrollEl.scrollLeft = Math.max(0, offsetLeft + anchor.unscaledX * z - anchor.viewRelX);
+        scrollEl.scrollTop = Math.max(0, anchor.unscaledY * z - anchor.viewRelY);
+      }
+    };
+
+    const handleTouchEnd = (ev: TouchEvent) => {
+      if (ev.touches.length < 2) {
+        if (pinchSessionRef.current) {
+          markMultiTouchPinch(260);
+        }
+        pinchSessionRef.current = null;
+      }
+    };
+
+    const handleWheel = (ev: WheelEvent) => {
+      if (!ev.ctrlKey && !ev.metaKey) return;
+      ev.preventDefault();
+      const contentEl = sheetsContentRef.current;
+      if (!contentEl) return;
+      const contentRect = contentEl.getBoundingClientRect();
+      const scrollRect = scrollEl.getBoundingClientRect();
+      const currZoom = zoomRef.current;
+      const factor = ev.deltaY < 0 ? 1.1 : 0.9;
+      const nextZoom = Math.max(0.5, Math.min(3.0, Math.round(currZoom * factor * 100) / 100));
+      if (nextZoom === currZoom) return;
+
+      pendingZoomAnchorRef.current = {
+        unscaledX: (ev.clientX - contentRect.left) / currZoom,
+        unscaledY: (ev.clientY - contentRect.top) / currZoom,
+        viewRelX: ev.clientX - scrollRect.left,
+        viewRelY: ev.clientY - scrollRect.top,
+      };
+      zoomRef.current = nextZoom;
+      setZoom(nextZoom);
+    };
+
+    scrollEl.addEventListener('touchstart', handleTouchStart, { passive: false });
+    scrollEl.addEventListener('touchmove', handleTouchMove, { passive: false });
+    scrollEl.addEventListener('touchend', handleTouchEnd);
+    scrollEl.addEventListener('touchcancel', handleTouchEnd);
+    scrollEl.addEventListener('wheel', handleWheel, { passive: false });
+
+    return () => {
+      scrollEl.removeEventListener('touchstart', handleTouchStart);
+      scrollEl.removeEventListener('touchmove', handleTouchMove);
+      scrollEl.removeEventListener('touchend', handleTouchEnd);
+      scrollEl.removeEventListener('touchcancel', handleTouchEnd);
+      scrollEl.removeEventListener('wheel', handleWheel);
+    };
+  }, [activePage?.id]);
+
+  const applyCenteredZoom = (targetZoom: number) => {
+    const clamped = Math.max(0.5, Math.min(3.0, Math.round(targetZoom * 100) / 100));
+    const scrollEl = scrollContainerRef.current;
+    const contentEl = sheetsContentRef.current;
+    if (scrollEl && contentEl) {
+      const scrollRect = scrollEl.getBoundingClientRect();
+      const contentRect = contentEl.getBoundingClientRect();
+      const midX = scrollRect.left + scrollRect.width / 2;
+      const midY = scrollRect.top + scrollRect.height / 2;
+      const currZoom = zoomRef.current;
+      pendingZoomAnchorRef.current = {
+        unscaledX: (midX - contentRect.left) / currZoom,
+        unscaledY: (midY - contentRect.top) / currZoom,
+        viewRelX: scrollRect.width / 2,
+        viewRelY: scrollRect.height / 2,
+      };
+    }
+    zoomRef.current = clamped;
+    setZoom(clamped);
+  };
 
   const handleImportPdfFile = async (file: File) => {
     if (!activeSection) return;
@@ -1890,6 +2116,7 @@ export const NoteEditor: React.FC = () => {
 
       {/* Scrollable Sheet Canvas (Vertical, Horizontal, or Horizontal 2-Page Spread) */}
       <div
+        ref={scrollContainerRef}
         data-editor-scroll="true"
         onDragOver={(e) => {
           if (e.dataTransfer?.types.includes('Files')) {
@@ -1908,11 +2135,7 @@ export const NoteEditor: React.FC = () => {
             void handleImportPdfFile(dropped);
           }
         }}
-        className={`relative flex-1 scrollbar-thin bg-slate-100/80 dark:bg-slate-950 p-2.5 sm:p-6 lg:p-8 pb-12 ${
-          scrollDirection === 'vertical'
-            ? 'overflow-y-auto overflow-x-auto space-y-6'
-            : 'overflow-x-auto overflow-y-auto flex flex-row items-start gap-6'
-        } ${
+        className={`relative flex-1 overflow-auto scrollbar-thin bg-slate-100/80 dark:bg-slate-950 touch-pan-x touch-pan-y ${
           isDraggingPdf ? 'ring-2 ring-inset ring-indigo-500/60 bg-indigo-50/40 dark:bg-indigo-950/20' : ''
         }`}
       >
@@ -1922,32 +2145,120 @@ export const NoteEditor: React.FC = () => {
             <span>Solte o documento PDF para carregar na nota</span>
           </div>
         )}
-        {scrollDirection === 'two-page' ? (
-          <>
-            {twoPageSpreads.map((pair, pairIdx) => (
-              <div key={pair[0].id} className="flex items-start gap-4 shrink-0">
-                {pair.map((pg, offset) => renderSheet(pg, pairIdx * 2 + offset))}
-              </div>
-            ))}
-          </>
-        ) : (
-          orderedSectionPages.map((pg, idx) => renderSheet(pg, idx))
-        )}
 
-        {/* Add New Page Below (or at the end in horizontal mode) */}
-        {activeSection && (
+        {(() => {
+          const isZoomed = zoom !== 1 && baseSize.width > 0 && baseSize.height > 0;
+          const scaledWidth = Math.ceil(baseSize.width * zoom);
+          const scaledHeight = Math.ceil(baseSize.height * zoom);
+          const offsetLeft = isZoomed
+            ? Math.max(0, (viewportSize.width - scaledWidth) / 2)
+            : 0;
+
+          return (
+            <div
+              style={
+                isZoomed
+                  ? {
+                      position: 'relative',
+                      width: `${Math.max(viewportSize.width, scaledWidth)}px`,
+                      height: `${Math.max(viewportSize.height, scaledHeight)}px`,
+                    }
+                  : undefined
+              }
+              className={
+                isZoomed
+                  ? undefined
+                  : scrollDirection === 'vertical'
+                  ? 'min-h-full w-full'
+                  : 'min-h-full min-w-full w-max'
+              }
+            >
+              <div
+                ref={sheetsContentRef}
+                style={
+                  isZoomed
+                    ? {
+                        position: 'absolute',
+                        top: 0,
+                        left: `${offsetLeft}px`,
+                        width: `${baseSize.width}px`,
+                        transform: `scale(${zoom})`,
+                        transformOrigin: 'top left',
+                        willChange: 'transform',
+                      }
+                    : undefined
+                }
+                className={`p-2.5 sm:p-6 lg:p-8 pb-12 ${
+                  scrollDirection === 'vertical'
+                    ? 'space-y-6 w-full'
+                    : 'flex flex-row items-start gap-6 w-max min-w-full'
+                }`}
+              >
+                {scrollDirection === 'two-page' ? (
+                  <>
+                    {twoPageSpreads.map((pair, pairIdx) => (
+                      <div key={pair[0].id} className="flex items-start gap-4 shrink-0">
+                        {pair.map((pg, offset) => renderSheet(pg, pairIdx * 2 + offset))}
+                      </div>
+                    ))}
+                  </>
+                ) : (
+                  orderedSectionPages.map((pg, idx) => renderSheet(pg, idx))
+                )}
+
+                {/* Add New Page Below (or at the end in horizontal mode) */}
+                {activeSection && (
+                  <div
+                    className={`no-print flex justify-center ${
+                      scrollDirection === 'vertical' ? 'pt-2' : 'shrink-0 self-center px-2'
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={handleCreateNewPage}
+                      className="inline-flex items-center gap-2 rounded-xl border border-indigo-200 dark:border-indigo-800 bg-white dark:bg-slate-900 px-4 py-2.5 text-xs font-semibold text-indigo-700 dark:text-indigo-200 shadow-xs hover:bg-indigo-50 dark:hover:bg-indigo-950/60 transition-colors whitespace-nowrap cursor-pointer"
+                    >
+                      <FilePlus2 className="w-4 h-4" />
+                      <span>Nova Página</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Subtle Zoom Controls (only visible while zoomed in/out) */}
+        {zoom !== 1 && (
           <div
-            className={`no-print flex justify-center ${
-              scrollDirection === 'vertical' ? 'pt-2' : 'shrink-0 self-center px-2'
-            }`}
+            onPointerDown={(e) => e.stopPropagation()}
+            className="no-print fixed bottom-4 right-4 z-40 flex items-center gap-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-white/95 dark:bg-slate-900/95 px-2 py-1 text-xs font-medium text-slate-700 dark:text-slate-200 shadow-lg backdrop-blur-md"
           >
             <button
               type="button"
-              onClick={handleCreateNewPage}
-              className="inline-flex items-center gap-2 rounded-xl border border-indigo-200 dark:border-indigo-800 bg-white dark:bg-slate-900 px-4 py-2.5 text-xs font-semibold text-indigo-700 dark:text-indigo-200 shadow-xs hover:bg-indigo-50 dark:hover:bg-indigo-950/60 transition-colors whitespace-nowrap cursor-pointer"
+              onClick={() => applyCenteredZoom(zoom - 0.25)}
+              disabled={zoom <= 0.5}
+              aria-label="Diminuir zoom"
+              className="flex h-7 w-7 items-center justify-center rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-35 cursor-pointer"
             >
-              <FilePlus2 className="w-4 h-4" />
-              <span>Nova Página</span>
+              <Minus className="w-3.5 h-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => applyCenteredZoom(1)}
+              title="Restaurar zoom para 100%"
+              className="min-w-[3.2rem] rounded-lg px-1.5 py-1 text-center tabular-nums font-semibold text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/50 cursor-pointer"
+            >
+              {Math.round(zoom * 100)}%
+            </button>
+            <button
+              type="button"
+              onClick={() => applyCenteredZoom(zoom + 0.25)}
+              disabled={zoom >= 3.0}
+              aria-label="Aumentar zoom"
+              className="flex h-7 w-7 items-center justify-center rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-35 cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5" />
             </button>
           </div>
         )}

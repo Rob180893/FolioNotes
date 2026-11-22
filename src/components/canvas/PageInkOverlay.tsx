@@ -5,7 +5,9 @@ import {
   hasNativeStylusBridge,
   hasStylusBarrelBit,
   isLikelyPalmTouch,
+  isMultiTouchActive,
   isStylusEraserEvent,
+  markPenActivity,
   scrollEditorByTouchDelta,
 } from '../../utils/stylusUtils';
 
@@ -594,16 +596,19 @@ export const PageInkOverlay = React.forwardRef<PageInkOverlayHandle, PageInkOver
         onPointerEnter={(e) => {
           if (e.pointerType === 'pen') {
             penGuardUntilRef.current = Date.now() + 800;
+            markPenActivity();
           }
         }}
         onPointerDown={(e) => {
           if (e.pointerType === 'touch') {
-            // Reject resting palm/hand contacts or touches while pen is hovering/writing
+            // Reject resting palm/hand contacts, touches while pen is hovering/writing, or active 2-finger pinch
             if (
               isLikelyPalmTouch(e, penGuardUntilRef.current) ||
               isDrawingRef.current ||
+              isMultiTouchActive() ||
               fingerScrollRef.current !== null
             ) {
+              fingerScrollRef.current = null;
               return;
             }
             fingerScrollRef.current = {
@@ -618,6 +623,7 @@ export const PageInkOverlay = React.forwardRef<PageInkOverlayHandle, PageInkOver
           if (e.pointerType === 'mouse' && e.button !== 0) return;
 
           penGuardUntilRef.current = Date.now() + 900;
+          if (e.pointerType === 'pen') markPenActivity();
           const recentHoverEraser =
             hoverEraserAtRef.current !== null && Date.now() - hoverEraserAtRef.current < 250;
           hoverEraserAtRef.current = null;
@@ -640,6 +646,7 @@ export const PageInkOverlay = React.forwardRef<PageInkOverlayHandle, PageInkOver
         onPointerMove={(e) => {
           if (e.pointerType === 'pen') {
             penGuardUntilRef.current = Date.now() + 800;
+            markPenActivity();
             if (!isDrawingRef.current && !hasNativeStylusBridge()) {
               if (hasStylusBarrelBit(e.buttons)) {
                 if (hoverEraserAtRef.current === null) {
@@ -656,9 +663,13 @@ export const PageInkOverlay = React.forwardRef<PageInkOverlayHandle, PageInkOver
           }
 
           if (e.pointerType === 'touch') {
+            if (isMultiTouchActive() || isDrawingRef.current) {
+              fingerScrollRef.current = null;
+              return;
+            }
             const currentPan = fingerScrollRef.current;
             if (!currentPan || currentPan.pointerId !== e.pointerId) return;
-            if (isLikelyPalmTouch(e, penGuardUntilRef.current) || isDrawingRef.current) {
+            if (isLikelyPalmTouch(e, penGuardUntilRef.current)) {
               fingerScrollRef.current = null;
               return;
             }
