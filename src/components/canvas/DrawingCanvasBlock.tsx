@@ -247,9 +247,10 @@ export const DrawingCanvasBlock: React.FC<DrawingCanvasBlockProps> = ({
     const coalesced =
       typeof nativeEv.getCoalescedEvents === 'function' ? nativeEv.getCoalescedEvents() : null;
     const samples = coalesced && coalesced.length > 0 ? coalesced : [nativeEv];
+    const parentEraser = isStylusEraserEvent(e);
 
     for (const sample of samples) {
-      const forceEraser = isStylusEraserEvent(sample);
+      const forceEraser = parentEraser || isStylusEraserEvent(sample);
       const pt = toRelativePoint(sample.clientX, sample.clientY, sample.pressure);
 
       if (forceEraser && !isBarrelEraserRef.current) {

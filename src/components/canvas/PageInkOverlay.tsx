@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useImperativeHandle, useRef, useState } 
 import type { DrawingPoint, DrawingStroke, PdfTextBox, PenTool as PenToolType } from '../../types/notes';
 import { renderStrokesToContext } from '../../utils/canvasRender';
 import {
+  hasNativeStylusBridge,
+  hasStylusBarrelBit,
   isLikelyPalmTouch,
   isStylusEraserEvent,
   scrollEditorByTouchDelta,
@@ -232,6 +234,7 @@ export const PageInkOverlay = React.forwardRef<PageInkOverlayHandle, PageInkOver
     const strokesRef = useRef(strokes);
     strokesRef.current = strokes;
     const penGuardUntilRef = useRef(0);
+    const hoverEraserAtRef = useRef<number | null>(null);
     const fingerScrollRef = useRef<{ pointerId: number; lastX: number; lastY: number } | null>(null);
     const cleanupExternalListenersRef = useRef<(() => void) | null>(null);
 
@@ -531,13 +534,14 @@ export const PageInkOverlay = React.forwardRef<PageInkOverlayHandle, PageInkOver
               const coalesced =
                 typeof ev.getCoalescedEvents === 'function' ? ev.getCoalescedEvents() : null;
               const samples = coalesced && coalesced.length > 0 ? coalesced : [ev];
+              const parentEraser = isStylusEraserEvent(ev);
               for (const sample of samples) {
                 moveStrokeRef.current(
                   sample.clientX,
                   sample.clientY,
                   sample.pressure,
                   ev.pointerId,
-                  isStylusEraserEvent(sample)
+                  parentEraser || isStylusEraserEvent(sample)
                 );
               }
             }
@@ -614,6 +618,9 @@ export const PageInkOverlay = React.forwardRef<PageInkOverlayHandle, PageInkOver
           if (e.pointerType === 'mouse' && e.button !== 0) return;
 
           penGuardUntilRef.current = Date.now() + 900;
+          const recentHoverEraser =
+            hoverEraserAtRef.current !== null && Date.now() - hoverEraserAtRef.current < 250;
+          hoverEraserAtRef.current = null;
           fingerScrollRef.current = null;
           onActivatePage?.();
           e.preventDefault();
@@ -627,12 +634,25 @@ export const PageInkOverlay = React.forwardRef<PageInkOverlayHandle, PageInkOver
             e.clientY,
             e.pressure,
             e.pointerId,
-            isStylusEraserEvent(e)
+            isStylusEraserEvent(e) || recentHoverEraser
           );
         }}
         onPointerMove={(e) => {
           if (e.pointerType === 'pen') {
             penGuardUntilRef.current = Date.now() + 800;
+            if (!isDrawingRef.current && !hasNativeStylusBridge()) {
+              if (hasStylusBarrelBit(e.buttons)) {
+                if (hoverEraserAtRef.current === null) {
+                  hoverEraserAtRef.current = Date.now();
+                }
+              } else if (hoverEraserAtRef.current !== null) {
+                const elapsed = Date.now() - hoverEraserAtRef.current;
+                hoverEraserAtRef.current = null;
+                if (elapsed < 550) {
+                  window.dispatchEvent(new CustomEvent('folio-stylus-button-click'));
+                }
+              }
+            }
           }
 
           if (e.pointerType === 'touch') {
@@ -659,13 +679,14 @@ export const PageInkOverlay = React.forwardRef<PageInkOverlayHandle, PageInkOver
               ? nativeEv.getCoalescedEvents()
               : null;
           const samples = coalesced && coalesced.length > 0 ? coalesced : [nativeEv];
+          const parentEraser = isStylusEraserEvent(e);
           for (const sample of samples) {
             moveStrokeAt(
               sample.clientX,
               sample.clientY,
               sample.pressure,
               e.pointerId,
-              isStylusEraserEvent(sample)
+              parentEraser || isStylusEraserEvent(sample)
             );
           }
         }}

@@ -232,6 +232,8 @@ export const NoteEditor: React.FC = () => {
   const sheetElementsRef = useRef<Map<string, HTMLDivElement>>(new Map());
   const inkOverlaysRef = useRef<Map<string, PageInkOverlayHandle>>(new Map());
   const internalActivationRef = useRef<string | null>(null);
+  const previousNonEraserToolRef = useRef<PenToolType>('fountain');
+  const lastStylusButtonToggleAtRef = useRef<number>(0);
 
   const scrollDirection: ScrollDirection = state.scrollDirection ?? 'vertical';
 
@@ -302,6 +304,28 @@ export const NoteEditor: React.FC = () => {
       // ignore storage errors
     }
   }, [penWidth, highlighterWidth, eraserWidth]);
+
+  useEffect(() => {
+    if (penTool !== 'eraser') {
+      previousNonEraserToolRef.current = penTool;
+    }
+  }, [penTool]);
+
+  useEffect(() => {
+    const handleStylusButtonClick = () => {
+      const now = Date.now();
+      if (now - lastStylusButtonToggleAtRef.current < 260) return;
+      lastStylusButtonToggleAtRef.current = now;
+      setIsInkMode(true);
+      setPenTool((curr) =>
+        curr === 'eraser' ? previousNonEraserToolRef.current : 'eraser'
+      );
+    };
+    window.addEventListener('folio-stylus-button-click', handleStylusButtonClick);
+    return () => {
+      window.removeEventListener('folio-stylus-button-click', handleStylusButtonClick);
+    };
+  }, []);
 
   const handleImportPdfFile = async (file: File) => {
     if (!activeSection) return;
@@ -1529,15 +1553,15 @@ export const NoteEditor: React.FC = () => {
                         setShowThicknessMenu(next);
                       }}
                       title={toolTitle}
-                      className={`inline-flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                      className={`inline-flex items-center justify-center gap-1.5 rounded-lg border px-2 py-1 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                         showThicknessMenu
                           ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-200'
                           : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700'
                       }`}
                     >
-                      <span className="flex h-4 w-4 items-center justify-center">
+                      <span className="flex h-4 w-4 shrink-0 items-center justify-center">
                         <span
-                          className="rounded-full transition-all"
+                          className="rounded-full"
                           style={{
                             width: `${previewDotPx}px`,
                             height: `${previewDotPx}px`,
@@ -1546,16 +1570,19 @@ export const NoteEditor: React.FC = () => {
                           }}
                         />
                       </span>
-                      <span className="tabular-nums text-[11px]">{activeWidth}</span>
+                      <span className="inline-block w-7 text-center tabular-nums text-[11px]">{activeWidth}</span>
                     </button>
 
                     {showThicknessMenu && (
-                      <div className="absolute left-0 sm:left-auto sm:right-0 top-full z-50 mt-2 w-72 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-4 shadow-2xl space-y-3.5">
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-semibold text-slate-800 dark:text-slate-100">
+                      <div
+                        onPointerDown={(e) => e.stopPropagation()}
+                        className="fixed sm:absolute left-4 right-4 sm:left-auto sm:right-0 top-auto sm:top-full z-50 mt-2 sm:w-72 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-4 shadow-2xl space-y-3.5 touch-none select-none"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs font-semibold text-slate-800 dark:text-slate-100 truncate">
                             {toolTitle}
                           </span>
-                          <span className="tabular-nums text-xs font-semibold text-indigo-600 dark:text-indigo-400">
+                          <span className="inline-block w-14 text-right shrink-0 tabular-nums text-xs font-semibold text-indigo-600 dark:text-indigo-400">
                             {activeWidth} px
                           </span>
                         </div>
@@ -1564,7 +1591,7 @@ export const NoteEditor: React.FC = () => {
                         <div className="flex h-14 items-center justify-center rounded-xl border border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/60 px-3 overflow-hidden">
                           {isEr ? (
                             <div
-                              className="rounded-full border-2 border-rose-500/80 bg-rose-500/15 transition-all"
+                              className="rounded-full border-2 border-rose-500/80 bg-rose-500/15"
                               style={{
                                 width: `${Math.min(44, activeWidth)}px`,
                                 height: `${Math.min(44, activeWidth)}px`,
@@ -1586,7 +1613,7 @@ export const NoteEditor: React.FC = () => {
                         </div>
 
                         {/* Continuous Slider + Fine Stepper */}
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 touch-none">
                           <button
                             type="button"
                             onClick={() => setWidth(activeWidth - stepW)}
@@ -1603,8 +1630,9 @@ export const NoteEditor: React.FC = () => {
                             step={stepW}
                             value={activeWidth}
                             onChange={(e) => setWidth(Number(e.target.value))}
+                            onInput={(e) => setWidth(Number((e.target as HTMLInputElement).value))}
                             aria-label={toolTitle}
-                            className="flex-1 accent-indigo-600 cursor-pointer"
+                            className="flex-1 accent-indigo-600 cursor-pointer touch-none"
                           />
                           <button
                             type="button"

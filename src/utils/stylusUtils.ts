@@ -11,19 +11,42 @@ export interface TouchPalmCandidate {
   height?: number;
 }
 
+declare global {
+  interface Window {
+    __folioNativeStylusEraser?: boolean;
+    __folioNativeStylusBridgeActive?: boolean;
+  }
+}
+
+export function hasNativeStylusBridge(): boolean {
+  return typeof window !== 'undefined' && window.__folioNativeStylusBridgeActive === true;
+}
+
 /**
  * Detects whether a stylus PointerEvent represents an eraser press:
+ * - Native Android MotionEvent bridge flag (TOOL_TYPE_ERASER / BUTTON_STYLUS_PRIMARY / SECONDARY)
  * - W3C pen eraser button: button === 5 or (buttons & 32) !== 0
- * - Samsung S Pen / Android barrel secondary button: button === 2 or (buttons & 2) !== 0
+ * - Secondary stylus barrel button: (buttons & 64) !== 0, (buttons & 2) !== 0, or button === 2
  */
 export function isStylusEraserEvent(e: StylusPointerLike): boolean {
   if (e.pointerType !== 'pen') return false;
+  const nativeEraser =
+    typeof window !== 'undefined' && window.__folioNativeStylusEraser === true;
   return (
+    nativeEraser ||
     (e.buttons & 32) !== 0 ||
+    (e.buttons & 64) !== 0 ||
     (e.buttons & 2) !== 0 ||
     e.button === 5 ||
     e.button === 2
   );
+}
+
+/**
+ * Returns true if the stylus barrel/eraser button bit is currently pressed in PointerEvent.buttons.
+ */
+export function hasStylusBarrelBit(buttons: number): boolean {
+  return (buttons & 32) !== 0 || (buttons & 64) !== 0 || (buttons & 2) !== 0;
 }
 
 /**
